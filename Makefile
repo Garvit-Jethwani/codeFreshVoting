@@ -3,11 +3,14 @@ BALLOT_IMG=ballot
 ECSVR_IMG=ecserver
 TEST_IMG=service-test-suite
 EC_IMG=election-commission
-IMAGE_TAG=latest
+ifndef IMAGE_TAG
+  IMAGE_TAG=latest
+endif
+CLUSTER_IP := $(shell ping -W2 -n -q -c1 current-cluster-roost.io  2> /dev/null | awk -F '[()]' '/PING/ { print $$2}')
 
 # HOSTNAME := $(shell hostname)
 .PHONY: all
-all: dockerise deploy
+all: dockerise helm-deploy
 
 .PHONY: test
 test: test-ballot test-voter test-ecserver
@@ -41,24 +44,44 @@ dockerise: build-voter build-ballot build-ecserver build-ec build-test
 
 .PHONY: build-ballot
 build-ballot:
+ifdef DOCKER_HOST
+	docker -H ${DOCKER_HOST} build -t ${BALLOT_IMG}:${IMAGE_TAG} -f ballot/Dockerfile ballot
+else
 	docker build -t ${BALLOT_IMG}:${IMAGE_TAG} -f ballot/Dockerfile ballot
+endif
 
 .PHONY: build-voter
 build-voter:
+ifdef DOCKER_HOST
+	docker -H ${DOCKER_HOST} build -t ${VOTER_IMG}:${IMAGE_TAG} -f voter/Dockerfile voter
+else
 	docker build -t ${VOTER_IMG}:${IMAGE_TAG} -f voter/Dockerfile voter	
+endif
 
 .PHONY: build-ecserver
 build-ecserver:
+ifdef DOCKER_HOST
+	docker -H ${DOCKER_HOST} build -t ${ECSVR_IMG}:${IMAGE_TAG} -f ecserver/Dockerfile ecserver
+else
 	docker build -t ${ECSVR_IMG}:${IMAGE_TAG} -f ecserver/Dockerfile ecserver
+endif
 
 .PHONY: build-test
 build-test:
+ifdef DOCKER_HOST
+	docker -H ${DOCKER_HOST} build -t ${TEST_IMG}:${IMAGE_TAG} -f service-test-suite/Dockerfile service-test-suite
+else
 	docker build -t ${TEST_IMG}:${IMAGE_TAG} -f service-test-suite/Dockerfile service-test-suite
+endif
 
 .PHONY: build-ec
 build-ec:
+ifdef DOCKER_HOST
+	docker -H ${DOCKER_HOST} build -t ${EC_IMG}:${IMAGE_TAG} -f election-commission/Dockerfile election-commission
+else
 	docker build -t ${EC_IMG}:${IMAGE_TAG} -f election-commission/Dockerfile election-commission
-
+endif
+		
 .PHONY: push
 push:
 	docker tag ${BALLOT_IMG}:${IMAGE_TAG} zbio/${BALLOT_IMG}:${IMAGE_TAG}
@@ -79,9 +102,22 @@ deploy:
 	kubectl apply -f voter/voter.yaml
 	kubectl apply -f service-test-suite/test-suite.yaml
 	kubectl apply -f election-commission/ec.yaml
+	kubectl apply -f ingress.yaml
+	
+.PHONY: helm-deploy
+helm-deploy: 
+ifeq ($(strip $(CLUSTER_IP)),)
+	@echo "UNKNOWN_CLUSTER_IP: failed to resolve current-cluster-roost.io to an valid IP"
+	@exit 1;
+endif
+		helm install vote helm-vote --set clusterIP=$(CLUSTER_IP)
+		
+.PHONY: helm-undeploy
+helm-undeploy:
+		-helm uninstall vote
 
 .PHONY: clean
-clean:
+clean: helm-undeploy
 	-kubectl delete -f service-test-suite/test-suite.yaml
 	-kubectl delete -f voter/voter.yaml
 	-kubectl delete -f ballot/ballot.yaml
